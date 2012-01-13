@@ -1,5 +1,5 @@
 //
-//  APNSConnection.h
+//  NXAPNService.h
 //
 //  Created by Raphael Bartolome on 12.04.11.
 //  Copyright 2011 Raphael Bartolome. All rights reserved.
@@ -7,17 +7,6 @@
 
 #import <Foundation/Foundation.h>
 
-#include <openssl/crypto.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
-#include <netdb.h>
-#include <unistd.h>
 
 /* Development Connection Infos */
 #define APPLE_SANDBOX_HOST          "gateway.sandbox.push.apple.com"
@@ -38,35 +27,37 @@
 #define MAX_PAYLOAD_SIZE     		256
 
 
-@interface APNSConnection : NSObject 
-{
-@private
-    NSOperationQueue *notificationQueue;
+@interface NXAPNServiceProvider : NSObject 
 
-    BOOL _sandbox;
-    NSInteger _port;
-    NSString *_host;
-    NSString *_path;
-    NSString *_certPath;
-    NSString *_keyPath;
-    NSString *_password;
-    
-    SSL_CTX         *_ssl_context;
-    SSL             *_ssl;
-    
-    struct sockaddr_in   _server_addr;
-    struct hostent      *_host_nfo;
-    int                  _socket;    
-}
 
 - (id)initWithCertificate:(NSString *)certPath 
            keyPEMFilePath:(NSString *)keyPath 
                  password:(NSString *)password
                   sandbox:(BOOL)sanbox;
 
+- (BOOL)open;
+- (BOOL)close;
+- (BOOL)pushNotification:(NSString *)apn deviceToken:(NSString *)token;
+- (BOOL)pushTextMessage:(NSString *)text deviceToken:(NSString *)token;
 
-- (BOOL)connect;
-- (BOOL)disconnect;
-- (void)sendNotification:(NSString *)apn deviceToken:(NSString *)token;
+@end
+
+@interface NXAPNNotification : NSObject
+
+@property(nonatomic, strong) NSString *alertMessage;
+@property(atomic) NSInteger badgeCount;
+@property(nonatomic, strong) NSString *soundFile;
+@property(nonatomic, strong) NSString *acme1;
+@property(atomic) NSInteger acme2;
+
++ (NXAPNNotification *)notificationWithMessage: (NSString *)message;
+
+- (void)setAlertMessageWithBody: (NSString *)body 
+                   actionLocKey: (NSString *)actionKey
+                         locKey: (NSString *)locKey
+                locKeyArguments: (NSString *)locKeyArgs
+                    launchImage: (NSString *)launchImage;
+
+- (NSString *)serialized;
 
 @end
