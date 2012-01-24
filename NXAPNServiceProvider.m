@@ -102,6 +102,11 @@
     return self;
 }
 
+- (void)dealloc;
+{
+    dispatch_release(pushNotificationQueue);    
+}
+
 - (NSString *)password;
 {
     return _password;
@@ -205,28 +210,32 @@
     return YES;
 }
 
-- (BOOL)close;
+- (BOOL)close: (NXAPNCloseProviderCallback)block;
 {
     _closed = YES;
-	int err;
-    dispatch_sync(pushNotificationQueue, ^{});
-    
-    err = SSL_shutdown(_ssl);
-    if(err == -1)
-    {
-        NSLog(@"Shutdown SSL failed");
-    }    
-    
-    err = close(_socket);
-    if(err == -1)
-    {
-        NSLog(@"Close socket failed");
-    }    
 
-    _socket = -1;
-    SSL_free(_ssl);    
-    SSL_CTX_free(_ssl_context);
-    
+    dispatch_async(pushNotificationQueue, ^{
+        int err;
+        
+        err = SSL_shutdown(_ssl);
+        if(err == -1)
+        {
+            NSLog(@"Shutdown SSL failed");
+        }    
+        
+        err = close(_socket);
+        if(err == -1)
+        {
+            NSLog(@"Close socket failed");
+        }    
+        
+        _socket = -1;
+        SSL_free(_ssl);    
+        SSL_CTX_free(_ssl_context);
+        
+        block();
+    });
+
     return YES;
 }
 
