@@ -18,8 +18,8 @@ More Informations about Apple Push Service
 			  deviceToken: @"4a8e6c8f 4a8e6c8f ..."
 		  		   expire: -1 // Never expire
 				   result: ^(BOOL successfully, int error) {
-                          if(successfully)
-                              NSLog(@"Push Message send");
+                          	if(successfully)
+								NSLog(@"Push Message send");
                       }];
 
 
@@ -45,8 +45,8 @@ More Informations about Apple Push Service
 			   deviceToken: @"4a8e6c8f 4a8e6c8f ..."
 		 		    expire: 1440 // 1440 minutes, expire in one day 
         	        result: ^(BOOL successfully, int error) {
-                          if(successfully)
-                              NSLog(@"Push Message send");
+                        	  if(successfully)
+								  NSLog(@"Push Message send");
                       }];
 	
 	[connection checkServiceFeedback: ^(NSTimeInterval timeIntervalSince1970, NSString *deviceToken) {
