@@ -9,6 +9,7 @@
 
 @class NXAPNSNotification;
 
+typedef void (^NXAPNSNotificationSend)(BOOL successfully, int error);
 typedef void (^NXAPNSProviderCleanup)();
 typedef void (^NXAPNSFeedbackDropToken)(NSTimeInterval timeIntervalSince1970, NSString *deviceToken);
 
@@ -23,8 +24,8 @@ typedef void (^NXAPNSFeedbackDropToken)(NSTimeInterval timeIntervalSince1970, NS
 
 - (BOOL)open;
 - (BOOL)close: (NXAPNSProviderCleanup)block;
-- (BOOL)pushNotification: (NXAPNSNotification *)apn deviceToken: (NSString *)token;
-- (BOOL)pushTextMessage: (NSString *)text deviceToken: (NSString *)token;
+- (BOOL)pushNotification: (NXAPNSNotification *)apn deviceToken: (NSString *)token expire: (NSInteger)inMinutes result: (NXAPNSNotificationSend)block;
+- (BOOL)pushTextMessage: (NSString *)text deviceToken: (NSString *)token expire: (NSInteger)inMinutes result: (NXAPNSNotificationSend)block;
 
 - (void)checkServiceFeedback: (NXAPNSFeedbackDropToken)block;
 

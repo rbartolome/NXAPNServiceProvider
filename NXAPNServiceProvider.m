@@ -176,18 +176,18 @@
     
     if(!_feedbackConnection)
         _feedbackConnection = [[NXAPNSConnection alloc] initWithCertificate: _certPath 
-                                                            keyPEMFilePath: _keyPath 
-                                                                  password: _password 
-                                                                      port: _sandbox ? APPLE_SANDBOX_FEEDBACK_PORT : APPLE_FEEDBACK_PORT 
-                                                                       url: _sandbox ? APPLE_SANDBOX_FEEDBACK_HOST : APPLE_FEEDBACK_HOST];
+                                                             keyPEMFilePath: _keyPath 
+                                                                   password: _password 
+                                                                       port: _sandbox ? APPLE_SANDBOX_FEEDBACK_PORT : APPLE_FEEDBACK_PORT 
+                                                                        url: _sandbox ? APPLE_SANDBOX_FEEDBACK_HOST : APPLE_FEEDBACK_HOST];
     
     dispatch_async(_feedbackQueue, ^{
         
-        char feedback[39];
+        char feedback[38];
         NSMutableData *feedbackData = [NSMutableData new];
 
         if(SSL_pending([_feedbackConnection ssl]) <= 0)
-           NSLog(@"APNS Server has no pending data");
+           NSLog(@"APNS Feedback Server has no pending data");
         
         while (SSL_pending([_feedbackConnection ssl]) > 0)
         {
@@ -210,17 +210,14 @@
 {
     if(!_gatewayConnection)
         _gatewayConnection = [[NXAPNSConnection alloc] initWithCertificate: _certPath 
-                                                           keyPEMFilePath: _keyPath 
-                                                                 password: _password 
-                                                                     port: _sandbox ? APPLE_SANDBOX_PORT : APPLE_PORT 
-                                                                      url: _sandbox ? APPLE_SANDBOX_HOST : APPLE_HOST];
+                                                            keyPEMFilePath: _keyPath 
+                                                                  password: _password 
+                                                                      port: _sandbox ? APPLE_SANDBOX_PORT : APPLE_PORT 
+                                                                       url: _sandbox ? APPLE_SANDBOX_HOST : APPLE_HOST];
     
-    if(_gatewayConnection)
-        return YES;
-
-
-    return NO;
+    return _gatewayConnection ? YES : NO;
 }
+
 
 - (BOOL)close: (NXAPNSProviderCleanup)block;
 {
@@ -248,15 +245,18 @@
     return YES;
 }
 
-- (BOOL)pushTextMessage:(NSString *)text deviceToken:(NSString *)token;
+- (BOOL)pushTextMessage:(NSString *)text deviceToken:(NSString *)token expire: (NSInteger)inMinutes result: (NXAPNSNotificationSend)block;
 {
     NXAPNSNotification *nof = [NXAPNSNotification notificationWithMessage: text];
     
     return [self pushNotification: nof 
-                      deviceToken: token];
+                      deviceToken: token
+                           expire: inMinutes
+                           result: block];
 }
 
-- (BOOL)pushNotification:(NXAPNSNotification *)apno deviceToken:(NSString *)token;
+
+- (BOOL)pushNotification:(NXAPNSNotification *)apno deviceToken:(NSString *)token expire: (NSInteger)inMinutes result: (NXAPNSNotificationSend)block;
 {
     __block NSString *apn = [apno serialized];
 
@@ -282,27 +282,82 @@
         char *payloadBinary = (char *)[apn UTF8String];
         size_t payloadLength = strlen(payloadBinary);
         
-        uint8_t command = 0;
-        char message[293];
-        char *pointer = message;
-        uint16_t networkTokenLength = htons(32);
-        uint16_t networkPayloadLength = htons(payloadLength);
-        
-        memcpy(pointer, &command, sizeof(uint8_t));
-        pointer += sizeof(uint8_t);
-        memcpy(pointer, &networkTokenLength, sizeof(uint16_t));
-        pointer += sizeof(uint16_t);
-        memcpy(pointer, deviceTokenBinary, 32);
-        pointer += 32;
-        memcpy(pointer, &networkPayloadLength, sizeof(uint16_t));
-        pointer += sizeof(uint16_t);
-        memcpy(pointer, payloadBinary, payloadLength);
-        pointer += payloadLength;
-        
-        if (SSL_write([_gatewayConnection ssl], &message, (int)(pointer - message)) <= 0)
+        if(!(inMinutes > 0))
         {
-            NSLog(@"Unable to push notification");
-        } 
+            /* message format is, |COMMAND|TOKENLEN|TOKEN|PAYLOADLEN|PAYLOAD| */
+            uint8_t command = 0;
+            char message[sizeof(uint8_t) + sizeof(uint16_t) + DEVICE_BINARY_SIZE + sizeof(uint16_t) + MAX_PAYLOAD_SIZE];
+            char *pointer = message;
+            uint16_t networkTokenLength = htons(DEVICE_BINARY_SIZE);
+            uint16_t networkPayloadLength = htons(payloadLength);
+            
+            memcpy(pointer, &command, sizeof(uint8_t));
+            pointer += sizeof(uint8_t);
+            
+            memcpy(pointer, &networkTokenLength, sizeof(uint16_t));
+            pointer += sizeof(uint16_t);
+            
+            memcpy(pointer, deviceTokenBinary, DEVICE_BINARY_SIZE);
+            pointer += DEVICE_BINARY_SIZE;
+            
+            memcpy(pointer, &networkPayloadLength, sizeof(uint16_t));
+            pointer += sizeof(uint16_t);
+            
+            memcpy(pointer, payloadBinary, payloadLength);
+            pointer += payloadLength;
+            
+            int ssl_error = 1;
+            if ((ssl_error = SSL_write([_gatewayConnection ssl], &message, (int)(pointer - message))) <= 0)
+            {
+                block(NO, ssl_error);
+            } 
+            else
+            {
+                block(YES, ssl_error);
+            }
+        }
+        else
+        {
+            /* message format is, |COMMAND|ID|EXPIRY|TOKENLEN|TOKEN|PAYLOADLEN|PAYLOAD| */
+            uint8_t command = 1;
+            char message[sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t) + DEVICE_BINARY_SIZE + sizeof(uint16_t) + MAX_PAYLOAD_SIZE];
+            char *pointer = message;
+            uint32_t networkResponseID = 1234;
+            uint32_t networkOrderExpiryEpochUTC = htonl(time(NULL)+(inMinutes * 60));
+            uint16_t networkTokenLength = htons(DEVICE_BINARY_SIZE);
+            uint16_t networkPayloadLength = htons(payloadLength);
+            
+            memcpy(pointer, &command, sizeof(uint8_t));
+            pointer += sizeof(uint8_t);
+            
+            memcpy(pointer, &networkResponseID, sizeof(uint32_t));
+            pointer += sizeof(uint32_t);
+            
+            memcpy(pointer, &networkOrderExpiryEpochUTC, sizeof(uint32_t));
+            pointer += sizeof(uint32_t);
+            
+            memcpy(pointer, &networkTokenLength, sizeof(uint16_t));
+            pointer += sizeof(uint16_t);
+            
+            memcpy(pointer, deviceTokenBinary, DEVICE_BINARY_SIZE);
+            pointer += DEVICE_BINARY_SIZE;
+            
+            memcpy(pointer, &networkPayloadLength, sizeof(uint16_t));
+            pointer += sizeof(uint16_t);
+            
+            memcpy(pointer, payloadBinary, payloadLength);
+            pointer += payloadLength;
+            
+            int ssl_error = 1;
+            if (SSL_write([_gatewayConnection ssl], &message, (int)(pointer - message)) <= 0)
+            {
+                block(NO, ssl_error);
+            } 
+            else
+            {
+                block(YES, ssl_error);
+            } 
+        }
     });
     
     return YES;

@@ -15,7 +15,12 @@ More Informations about Apple Push Service
 																				 sandbox: YES];
 
 	[apns pushTextMessage: @"Test Text Message" 
-			  deviceToken: @"4a8e6c8f 4a8e6c8f ..."];
+			  deviceToken: @"4a8e6c8f 4a8e6c8f ..."
+		  		   expire: -1 // Never expire
+				   result: ^(BOOL successfully, int error) {
+                          if(successfully)
+                              NSLog(@"Push Message send");
+                      }];
 
 
 	//Or use NXAPNotification
@@ -31,13 +36,18 @@ More Informations about Apple Push Service
                               launchImage: @"image_.png"];
 							  
 	//Optional call
-	[notification setBadgeCount :1];
+	[notification setBadgeCount: 1];
 	[notification setSoundFile: @"beep.wav"];
 	[notification setAcme1:@"bar"];
 	[notification setAcme2: 42];
 	
 	[apns pushNotification: notification 
-			   deviceToken: @"4a8e6c8f 4a8e6c8f ..."];
+			   deviceToken: @"4a8e6c8f 4a8e6c8f ..."
+		 		    expire: 1440 // 1440 minutes, expire in one day 
+        	        result: ^(BOOL successfully, int error) {
+                          if(successfully)
+                              NSLog(@"Push Message send");
+                      }];
 	
 	[connection checkServiceFeedback: ^(NSTimeInterval timeIntervalSince1970, NSString *deviceToken) {
         NSLog(@"Drop Token: %@", deviceToken);
