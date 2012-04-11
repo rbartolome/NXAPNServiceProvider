@@ -39,4 +39,10 @@ More Informations about Apple Push Service
 	[apns pushNotification: notification 
 			   deviceToken: @"4a8e6c8f 4a8e6c8f ..."];
 	
-	[connection close];
+	[connection checkServiceFeedback: ^(NSTimeInterval timeIntervalSince1970, NSString *deviceToken) {
+        NSLog(@"Drop Token: %@", deviceToken);
+    }];
+    
+    [connection close: ^{
+    	NSLog(@"Provider closed with no pending messages.");
+    }];
