@@ -75,7 +75,7 @@
 @end
 
 
-@interface NXAPNConnection : NSObject
+@interface NXAPNSConnection : NSObject
 {
     SSL_CTX         *_ssl_context;
     SSL             *_ssl;
@@ -112,8 +112,8 @@
     NSString *_keyPath;
     NSString *_password;
     
-    NXAPNConnection *_gatewayConnection;
-    NXAPNConnection *_feedbackConnection;
+    NXAPNSConnection *_gatewayConnection;
+    NXAPNSConnection *_feedbackConnection;
 
     NXAPNSFeedbackDropToken _feedbackBlock;
     
@@ -175,7 +175,7 @@
     _feedbackBlock = [block copy];
     
     if(!_feedbackConnection)
-        _feedbackConnection = [[NXAPNConnection alloc] initWithCertificate: _certPath 
+        _feedbackConnection = [[NXAPNSConnection alloc] initWithCertificate: _certPath 
                                                             keyPEMFilePath: _keyPath 
                                                                   password: _password 
                                                                       port: _sandbox ? APPLE_SANDBOX_FEEDBACK_PORT : APPLE_FEEDBACK_PORT 
@@ -209,7 +209,7 @@
 - (BOOL)open;
 {
     if(!_gatewayConnection)
-        _gatewayConnection = [[NXAPNConnection alloc] initWithCertificate: _certPath 
+        _gatewayConnection = [[NXAPNSConnection alloc] initWithCertificate: _certPath 
                                                            keyPEMFilePath: _keyPath 
                                                                  password: _password 
                                                                      port: _sandbox ? APPLE_SANDBOX_PORT : APPLE_PORT 
@@ -312,7 +312,7 @@
 @end
 
 
-@implementation NXAPNConnection
+@implementation NXAPNSConnection
 
 - (id)initWithCertificate:(NSString *)certPath 
            keyPEMFilePath:(NSString *)keyPath 
