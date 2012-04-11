@@ -19,7 +19,25 @@
 #include <netdb.h>
 #include <unistd.h>
 
-@implementation NXAPNNotification
+/* Development Connection Infos */
+#define APPLE_SANDBOX_HOST          "gateway.sandbox.push.apple.com"
+#define APPLE_SANDBOX_PORT          2195
+
+#define APPLE_SANDBOX_FEEDBACK_HOST "feedback.sandbox.push.apple.com"
+#define APPLE_SANDBOX_FEEDBACK_PORT 2196
+
+/* Release Connection Infos */
+#define APPLE_HOST          		"gateway.push.apple.com"
+#define APPLE_PORT         			 2195
+
+#define APPLE_FEEDBACK_HOST 		"feedback.push.apple.com"
+#define APPLE_FEEDBACK_PORT 		2196
+
+#define DEVICE_BINARY_SIZE  		32
+#define MAX_PAYLOAD_SIZE     		256
+
+
+@implementation NXAPNSNotification
 
 @synthesize alertMessage;
 @synthesize badgeCount;
@@ -27,9 +45,9 @@
 @synthesize acme1;
 @synthesize acme2;
 
-+ (NXAPNNotification *)notificationWithMessage: (NSString *)message;
++ (NXAPNSNotification *)notificationWithMessage: (NSString *)message;
 {
-    NXAPNNotification *nof = [NXAPNNotification new];
+    NXAPNSNotification *nof = [NXAPNSNotification new];
     [nof setAlertMessage: message];
     
     return nof;
@@ -57,10 +75,34 @@
 @end
 
 
+@interface NXAPNConnection : NSObject
+{
+    SSL_CTX         *_ssl_context;
+    SSL             *_ssl;
+    
+    struct sockaddr_in   _server_addr;
+    struct hostent      *_host_nfo;
+    int                  _socket;
+}
+
+- (id)initWithCertificate:(NSString *)certPath 
+           keyPEMFilePath:(NSString *)keyPath 
+                 password:(NSString *)password
+                     port: (int)port
+                      url: (const char *)url;
+
+- (SSL *)ssl;
+- (void)safeClose;
+
+@end
+
+
+
 @implementation NXAPNServiceProvider
 {
 @private
-    dispatch_queue_t pushNotificationQueue;
+    dispatch_queue_t _gatewayQueue;
+    dispatch_queue_t _feedbackQueue;
     
     BOOL _sandbox;
     NSInteger _port;
@@ -70,14 +112,20 @@
     NSString *_keyPath;
     NSString *_password;
     
-    SSL_CTX         *_ssl_context;
-    SSL             *_ssl;
-    
-    struct sockaddr_in   _server_addr;
-    struct hostent      *_host_nfo;
-    int                  _socket;
+    NXAPNConnection *_gatewayConnection;
+    NXAPNConnection *_feedbackConnection;
+
+    NXAPNSFeedbackDropToken _feedbackBlock;
     
     BOOL _closed;
+}
+
++ (NSString *)deviceTokenToString: (NSData *)deviceToken;
+{
+    NSString *tmpToken = [NSString stringWithFormat:@"%@", deviceToken];
+    NSUInteger loc_begin = [tmpToken rangeOfString: @"<"].location+1;
+    NSUInteger loc_end = [tmpToken rangeOfString: @">"].location-1;
+    return [tmpToken substringWithRange: NSMakeRange(loc_begin, loc_end)];
 }
 
 - (id)initWithCertificate:(NSString *)certPath 
@@ -88,8 +136,8 @@
     if((self = [super init]))
     {
         _closed = NO;
-        _socket = -1;
-        pushNotificationQueue = dispatch_queue_create("com.nexttap.NXAPNSService", DISPATCH_QUEUE_SERIAL);
+        _gatewayQueue = dispatch_queue_create("com.nexttap.NXAPNSGatewayQueue", DISPATCH_QUEUE_SERIAL);
+        _feedbackQueue = dispatch_queue_create("com.nexttap.NXAPNSFeedbackQueue", DISPATCH_QUEUE_SERIAL);
         
         _certPath = [certPath copy];
         _keyPath = [keyPath copy];
@@ -104,7 +152,15 @@
 
 - (void)dealloc;
 {
-    dispatch_release(pushNotificationQueue);    
+    [self close:^{
+    }];
+    
+    dispatch_sync(_gatewayQueue, ^{
+        
+    });
+
+    dispatch_release(_gatewayQueue);
+    dispatch_release(_feedbackQueue);
 }
 
 - (NSString *)password;
@@ -113,150 +169,105 @@
 }
 
 
-- (BOOL)open;
+#pragma mark - APNS Feedback
+- (void)checkServiceFeedback: (NXAPNSFeedbackDropToken)block;
 {
-    int err;
+    _feedbackBlock = [block copy];
     
-    /* init SSL */
-    SSL_library_init();
-    SSL_load_error_strings();
+    if(!_feedbackConnection)
+        _feedbackConnection = [[NXAPNConnection alloc] initWithCertificate: _certPath 
+                                                            keyPEMFilePath: _keyPath 
+                                                                  password: _password 
+                                                                      port: _sandbox ? APPLE_SANDBOX_FEEDBACK_PORT : APPLE_FEEDBACK_PORT 
+                                                                       url: _sandbox ? APPLE_SANDBOX_FEEDBACK_HOST : APPLE_FEEDBACK_HOST];
     
-    /* Create an SSL context*/
-    _ssl_context = SSL_CTX_new(SSLv3_method());                        
-    if(!_ssl_context)
-    {
-        NSLog(@"Create SSL Context failed");
-        return NO;
-    }
-    
-    /* Load the CA from Path */
-    if(SSL_CTX_load_verify_locations(_ssl_context, NULL, [_path UTF8String]) <= 0)
-    {
-        /* Handle failed load here */
-        NSLog(@"Failed to set CA location");
-        ERR_print_errors_fp(stderr);
-        return NO;
-    }
-    
-    /* Load the client certificate into the SSL context */
-    if (SSL_CTX_use_certificate_file(_ssl_context, [_certPath UTF8String], SSL_FILETYPE_PEM) <= 0) {
-        NSLog(@"Using Certificate File failed");
-        ERR_print_errors_fp(stderr);
-        return NO;
-    }
-    
-    SSL_CTX_set_default_passwd_cb_userdata(_ssl_context, (void *)[[self password] UTF8String]);
-    
-    /* Load the private-key corresponding to the client certificate */
-    if (SSL_CTX_use_PrivateKey_file(_ssl_context, [_keyPath UTF8String], SSL_FILETYPE_PEM) <= 0) {
-        NSLog(@"Using Private Key failed");
-        ERR_print_errors_fp(stderr);
-        return NO;
-    }
-    
-    /* Check if the client certificate and private-key matches */
-    if (!SSL_CTX_check_private_key(_ssl_context)) {
-        NSLog(@"Private key does not match");
-        return NO;
-    }
-    
-    /* Set up a TCP socket */
-    _socket = socket (PF_INET, SOCK_STREAM, IPPROTO_TCP);       
-    if(_socket == -1)
-    {
-        NSLog(@"Get Socket failed");
-        return NO;
-    }
-    
-    
-    memset(&_server_addr, '\0', sizeof(_server_addr));
-    _server_addr.sin_family      = AF_INET;
-    _server_addr.sin_port        = htons(_sandbox ? APPLE_SANDBOX_PORT : APPLE_PORT);
-    _host_nfo = gethostbyname(_sandbox ? APPLE_SANDBOX_HOST : APPLE_HOST);
-    
-    if(_host_nfo)
-    {
-        struct in_addr *address = (struct in_addr*)_host_nfo->h_addr_list[0];
-        _server_addr.sin_addr.s_addr = inet_addr(inet_ntoa(*address));
-    }
-    else
-    {
-        NSLog(@"Could not resolve hostname %@", _host);
-    }
-    
-    err = connect(_socket, (struct sockaddr*) &_server_addr, sizeof(_server_addr)); 
-    if(err == -1)
-    {
-        NSLog(@"Could not connect");
-        return NO;
-    }    
-    
-    _ssl = SSL_new(_ssl_context);
-    if(!_ssl)
-    {
-        NSLog(@"Get SSL Socket failed");
-        return NO;
-    }    
-    
-    SSL_set_fd(_ssl, _socket);
-    
-    err = SSL_connect(_ssl);
-    if(err == -1)
-    {
-        NSLog(@"SSL Server connection failed");
-        return NO;
-    }
-    
-    return YES;
+    dispatch_async(_feedbackQueue, ^{
+        
+        char feedback[39];
+        NSMutableData *feedbackData = [NSMutableData new];
+
+        if(SSL_pending([_feedbackConnection ssl]) <= 0)
+           NSLog(@"APNS Server has no pending data");
+        
+        while (SSL_pending([_feedbackConnection ssl]) > 0)
+        {
+            int bytesLength = SSL_read([_feedbackConnection ssl], feedback, 39);
+            [feedbackData appendBytes: feedback length: bytesLength];
+            
+            while ([feedbackData length] > 38)
+            {
+                NSData *deviceToken = [NSData dataWithBytes: [feedbackData bytes] + 6 length: 32];                
+                _feedbackBlock(0, [NXAPNServiceProvider deviceTokenToString: deviceToken]);
+                
+                [feedbackData replaceBytesInRange: NSMakeRange(0, 38) withBytes: "" length: 0];
+            }
+        }
+    });
 }
 
-- (BOOL)close: (NXAPNCloseProviderCallback)block;
+#pragma mark - APNS Gateway
+- (BOOL)open;
 {
+    if(!_gatewayConnection)
+        _gatewayConnection = [[NXAPNConnection alloc] initWithCertificate: _certPath 
+                                                           keyPEMFilePath: _keyPath 
+                                                                 password: _password 
+                                                                     port: _sandbox ? APPLE_SANDBOX_PORT : APPLE_PORT 
+                                                                      url: _sandbox ? APPLE_SANDBOX_HOST : APPLE_HOST];
+    
+    if(_gatewayConnection)
+        return YES;
+
+
+    return NO;
+}
+
+- (BOOL)close: (NXAPNSProviderCleanup)block;
+{
+    NXAPNSProviderCleanup _block = [block copy];
     _closed = YES;
 
-    dispatch_async(pushNotificationQueue, ^{
-        int err;
+    dispatch_async(_gatewayQueue, ^{
         
-        err = SSL_shutdown(_ssl);
-        if(err == -1)
+        if(_gatewayConnection)
         {
-            NSLog(@"Shutdown SSL failed");
-        }    
+            [_gatewayConnection safeClose];
+            _gatewayConnection = nil;
+        }
         
-        err = close(_socket);
-        if(err == -1)
+        if(_feedbackConnection)
         {
-            NSLog(@"Close socket failed");
-        }    
+            [_feedbackConnection safeClose];
+            _feedbackConnection = nil;
+        }
         
-        _socket = -1;
-        SSL_free(_ssl);    
-        SSL_CTX_free(_ssl_context);
-        
-        block();
+        _block();
     });
 
+    
     return YES;
 }
 
 - (BOOL)pushTextMessage:(NSString *)text deviceToken:(NSString *)token;
 {
-    NXAPNNotification *nof = [NXAPNNotification notificationWithMessage: text];
+    NXAPNSNotification *nof = [NXAPNSNotification notificationWithMessage: text];
     
-    return [self pushNotification: [nof serialized] 
+    return [self pushNotification: nof 
                       deviceToken: token];
 }
 
-- (BOOL)pushNotification:(NSString *)apn deviceToken:(NSString *)token;
+- (BOOL)pushNotification:(NXAPNSNotification *)apno deviceToken:(NSString *)token;
 {
+    __block NSString *apn = [apno serialized];
+
     if(_closed)
         return NO;
     
-    dispatch_async(pushNotificationQueue, ^{
+    if(!_gatewayConnection)
+        [self open];
         
-        if(_socket == -1)
-            [self open];
-        
+    dispatch_async(_gatewayQueue, ^{
+
         NSMutableData *deviceToken = [NSMutableData data];
         unsigned value;
         NSScanner *scanner = [NSScanner scannerWithString:token];
@@ -288,11 +299,10 @@
         memcpy(pointer, payloadBinary, payloadLength);
         pointer += payloadLength;
         
-        if (SSL_write(_ssl, &message, (int)(pointer - message)) <= 0)
+        if (SSL_write([_gatewayConnection ssl], &message, (int)(pointer - message)) <= 0)
         {
             NSLog(@"Unable to push notification");
-        }
- 
+        } 
     });
     
     return YES;
@@ -301,4 +311,150 @@
 
 @end
 
+
+@implementation NXAPNConnection
+
+- (id)initWithCertificate:(NSString *)certPath 
+           keyPEMFilePath:(NSString *)keyPath 
+                 password:(NSString *)password
+                     port: (int)port
+                      url: (const char *)url
+{
+    if((self = [super init]))
+    {
+        int err;
+        
+        /* init SSL */
+        SSL_library_init();
+        SSL_load_error_strings();
+        
+        /* Create an SSL context*/
+        _ssl_context = SSL_CTX_new(SSLv3_method());                        
+        if(!_ssl_context)
+        {
+            NSLog(@"Create SSL Context failed");
+            return nil;
+        }
+        
+        /* Load the CA from Path */
+        if(SSL_CTX_load_verify_locations(_ssl_context, NULL, [[keyPath stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"/%@", [keyPath lastPathComponent]] 
+                                                                                                 withString:@""] UTF8String]) <= 0)
+        {
+            /* Handle failed load here */
+            NSLog(@"Failed to set CA location");
+            ERR_print_errors_fp(stderr);
+            return nil;
+        }
+        
+        /* Load the client certificate into the SSL context */
+        if (SSL_CTX_use_certificate_file(_ssl_context, [certPath UTF8String], SSL_FILETYPE_PEM) <= 0) {
+            NSLog(@"Using Certificate File failed");
+            ERR_print_errors_fp(stderr);
+            return nil;
+        }
+        
+        SSL_CTX_set_default_passwd_cb_userdata(_ssl_context, (void *)[password UTF8String]);
+        
+        /* Load the private-key corresponding to the client certificate */
+        if (SSL_CTX_use_PrivateKey_file(_ssl_context, [keyPath UTF8String], SSL_FILETYPE_PEM) <= 0) {
+            NSLog(@"Using Private Key failed");
+            ERR_print_errors_fp(stderr);
+            return nil;
+        }
+        
+        /* Check if the client certificate and private-key matches */
+        if (!SSL_CTX_check_private_key(_ssl_context)) {
+            NSLog(@"Private key does not match");
+            return nil;
+        }
+        
+        /* Set up a TCP socket */
+        _socket = socket (PF_INET, SOCK_STREAM, IPPROTO_TCP);       
+        if(_socket == -1)
+        {
+            NSLog(@"Get Socket failed");
+            return nil;
+        }
+        
+        
+        memset(&_server_addr, '\0', sizeof(_server_addr));
+        _server_addr.sin_family      = AF_INET;
+        _server_addr.sin_port        = htons(port);
+        _host_nfo = gethostbyname(url);
+        
+        if(_host_nfo)
+        {
+            struct in_addr *address = (struct in_addr*)_host_nfo->h_addr_list[0];
+            _server_addr.sin_addr.s_addr = inet_addr(inet_ntoa(*address));
+        }
+        else
+        {
+            NSLog(@"Could not resolve hostname %@", url);
+        }
+        
+        err = connect(_socket, (struct sockaddr*) &_server_addr, sizeof(_server_addr)); 
+        if(err == -1)
+        {
+            NSLog(@"Could not connect");
+            return nil;
+        }    
+        
+        _ssl = SSL_new(_ssl_context);
+        if(!_ssl)
+        {
+            NSLog(@"Get SSL Socket failed");
+            return nil;
+        }    
+        
+        SSL_set_fd(_ssl, _socket);
+        
+        err = SSL_connect(_ssl);
+        if(err == -1)
+        {
+            NSLog(@"SSL Server connection failed");
+            return nil;
+        }        
+    }
+    
+    return self; 
+}
+
+
+- (SSL *)ssl;
+{
+    return _ssl;
+}
+
+- (void)safeClose;
+{
+    int err;
+    
+    err = SSL_shutdown(_ssl);
+    if(err == -1)
+    {
+        NSLog(@"Shutdown SSL failed");
+    }    
+    
+    err = close(_socket);
+    if(err == -1)
+    {
+        NSLog(@"Close socket failed");
+    }    
+    
+    _socket = -1;
+    
+    if(err >= 0)
+    {
+        SSL_free(_ssl);    
+        SSL_CTX_free(_ssl_context); 
+    }
+}
+
+- (void)dealloc;
+{
+    if(_socket != -1)
+        [self safeClose];
+}
+
+@end
 
