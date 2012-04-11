@@ -36,7 +36,7 @@ More Informations about Apple Push Service
 	[notification setAcme1:@"bar"];
 	[notification setAcme2: 42];
 	
-	[apns pushNotification: [notification serialized] 
+	[apns pushNotification: notification 
 			   deviceToken: @"4a8e6c8f 4a8e6c8f ..."];
 	
 	[connection close];
